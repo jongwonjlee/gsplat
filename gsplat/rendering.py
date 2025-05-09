@@ -239,7 +239,7 @@ def rasterization(
     assert opacities.shape == (N,), opacities.shape
     assert viewmats.shape == (C, 4, 4), viewmats.shape
     assert Ks.shape == (C, 3, 3), Ks.shape
-    assert render_mode in ["RGB", "D", "ED", "RGB+D", "RGB+ED"], render_mode
+    assert render_mode in ["RGB", "D", "ED", "RGB+D", "RGB+ED", "RGB+ED+U"], render_mode
 
     def reshape_view(C: int, world_view: torch.Tensor, N_world: list) -> torch.Tensor:
         view_list = list(
@@ -488,6 +488,12 @@ def rasterization(
         colors = depths[..., None]
         if backgrounds is not None:
             backgrounds = torch.zeros(C, 1, device=backgrounds.device)
+    elif render_mode == "RGB+ED+U":
+        colors = torch.cat((colors, depths[..., None], depths[..., None] ** 2), dim=-1)
+        if backgrounds is not None:
+            backgrounds = torch.cat(
+                [backgrounds, torch.zeros(C, 1, device=backgrounds.device)], dim=-1
+            )
     else:  # RGB
         pass
 
@@ -575,6 +581,21 @@ def rasterization(
             [
                 render_colors[..., :-1],
                 render_colors[..., -1:] / render_alphas.clamp(min=1e-10),
+            ],
+            dim=-1,
+        )
+    elif render_mode == "RGB+ED+U":
+        # The second from the last channel of render_colors is the accumulated depth (e.g., \Sum_n {z_n * \alpha_n * T_n})
+        # The last channel of render_colors is the accumulated depth squared (e.g., \Sum_n {z_n^2 * \alpha_n * T_n})
+        # render_alphas is the accumulated alpha (e.g., \Sum_n {\alpha_n * T_n})
+
+        # The goal is to get the expected depth (e.g., \Sum_n {z_n * \alpha_n * T_n} / \Sum_n {\alpha_n * T_n}) as the second from the last channel
+        # and the variance of depth (e.g., \Sum_n {(z_n - E[z])^2 * \alpha_n * T_n} / \Sum_n {\alpha_n * T_n}) as the last channel
+        render_colors = torch.cat(
+            [
+                render_colors[..., :-2],
+                (render_colors[..., -2]) / render_alphas.clamp(min=1e-10),
+                (render_colors[..., -1] - render_colors[..., -2] ** 2) / render_alphas.clamp(min=1e-10),
             ],
             dim=-1,
         )
